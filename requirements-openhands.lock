@@ -1,0 +1,8 @@
+# Tool registration and the discovery controls in openhands_adapter.openhands
+# are validated against this SDK release.  Do not widen this constraint without
+# updating the runtime compatibility check and its tests.
+openhands-sdk==1.49.5
+# Agent Diet uses the same gpt-4o tokenizer as the Trae implementation.
+tiktoken==0.14.0
+# Context-aware redundancy gate matches Trae's LZ4 frame compression.
+lz4==4.4.5
