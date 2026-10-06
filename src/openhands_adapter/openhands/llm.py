@@ -58,7 +58,7 @@ def _subscription_llm(LLM: Any, config: OpenHandsConfig, model: str) -> Any:
     )
 
 
-def _api_key_llm(LLM: Any, config: OpenHandsConfig, model: str) -> Any:
+def _api_key_llm(LLM: Any, config: OpenHandsConfig, model: str, policy=None) -> Any:
     """Create an OpenAI-compatible LLM, including OpenRouter when configured."""
     base_url = config.base_url
     if config.api_key_env == OPENROUTER_API_KEY_ENV and not base_url:
@@ -69,10 +69,14 @@ def _api_key_llm(LLM: Any, config: OpenHandsConfig, model: str) -> Any:
     }
     if base_url:
         kwargs["base_url"] = base_url.rstrip("/")
+    if policy is not None:
+        kwargs.update(max_output_tokens=8192, top_p=None, top_k=None, seed=None,
+                      reasoning_effort=policy.params().get("reasoning_effort"),
+                      num_retries=0, drop_params=False, caching_prompt=False, api_mode="chat")
     return LLM(**kwargs)
 
 
-def build_llm(config: OpenHandsConfig, *, model: str | None = None) -> Any:
+def build_llm(config: OpenHandsConfig, *, model: str | None = None, policy=None) -> Any:
     """Return an OpenHands LLM using the configured credential source.
 
     Examples::
@@ -84,11 +88,13 @@ def build_llm(config: OpenHandsConfig, *, model: str | None = None) -> Any:
         --auth api-key --api-key-env OPENROUTER_API_KEY --model openai/gpt-5.2
     """
     config.validate()
+    if policy is not None and config.requires_exact_transport:
+        policy.validate_transport(subscription=config.auth == "subscription", capabilities=config.trae_capabilities)
     sdk_llm = _load_sdk_llm()
     selected_model = model or config.model
     if config.auth == "subscription":
         return _subscription_llm(sdk_llm, config, selected_model)
-    return _api_key_llm(sdk_llm, config, selected_model)
+    return _api_key_llm(sdk_llm, config, selected_model, policy)
 
 
 __all__ = ["OPENROUTER_API_KEY_ENV", "OPENROUTER_BASE_URL", "build_llm"]

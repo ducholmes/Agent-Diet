@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ..input_loader import CaseSpec, CommandSpec, expand_target_commands
 from ..progress import stage
+from ..events import emit
 from .command import run_command
 from .environment import EnvironmentError, ensure_available
 from .models import BaselineResult, CommandResult, ValidationResult
@@ -89,6 +90,16 @@ def run_baseline(case: CaseSpec, repair: Path, validation: Path, *, timeout_seco
         stage("baseline", "check_passed", check="environment")
         create_baseline(repair, case.failure_log)
         checks["git_baseline"] = "ok"
+        tracked = set(subprocess.check_output(('git', '-C', str(repair), 'ls-files', '-z')).decode('utf-8').split('\0'))
+        production = [str(path.relative_to(repair)) for path in repair.rglob('*')
+                      if path.is_file() and '.git' not in path.relative_to(repair).parts
+                      and path.suffix in case.source_extensions]
+        untracked = sorted(path for path in production if path not in tracked)
+        emit('baseline_source_index', production_paths=sorted(production),
+             untracked_production_paths=untracked, tracked_production_count=len(production)-len(untracked))
+        if untracked:
+            raise RuntimeError('Input production sources are not tracked in baseline; fix case provisioning: ' + ', '.join(untracked))
+        checks['tracked_production'] = 'ok'
         stage("baseline", "check_passed", check="git_baseline")
         if not any(validation.iterdir()):
             raise RuntimeError("validation workspace is empty")

@@ -15,6 +15,8 @@ from typing import TextIO
 
 from ..config import AgentDietConfig, OpenHandsConfig, WorkflowConfig
 from ..progress import stage
+from ..events import emit
+from ..compat.audit import sanitize, register_secrets, byte_hash
 from .container import remove, start
 
 
@@ -53,14 +55,18 @@ def _serializable(value):
     return value
 
 
-def _capture_worker_stream(stream: TextIO, path: Path, *, forward_progress: bool) -> None:
+def _capture_worker_stream(stream: TextIO, path: Path, *, forward_progress: bool, raw: bool = True) -> None:
     """Persist worker output and forward our structured progress lines to stderr."""
     with path.open("w", encoding="utf-8") as handle:
         for line in iter(stream.readline, ""):
-            handle.write(line)
+            clean_line = sanitize(line)
+            if raw:
+                handle.write(clean_line)
+            else:
+                handle.write(json.dumps({'sha256': byte_hash(line.encode('utf-8')), 'bytes': len(line.encode('utf-8'))}) + '\n')
             handle.flush()
             if forward_progress and line.lstrip().startswith("[agent-diet]"):
-                print(line.rstrip("\n"), file=sys.stderr, flush=True)
+                print(clean_line.rstrip("\n"), file=sys.stderr, flush=True)
     stream.close()
 
 
@@ -68,6 +74,9 @@ def run_worker(workspace: Path, prompt: str, output_dir: Path, *, execution_plan
     """Create repair container, supervise worker process, and always remove it."""
     if output_dir.resolve().is_relative_to(workspace.resolve()):
         raise ValueError("Worker configuration/output must be outside the repair workspace")
+    from ..compat.trae_llm_policy import validate_trae_run
+    validate_trae_run(openhands, diet, workflow)
+    register_secrets(os.environ.get(openhands.api_key_env))
     logs = output_dir / "logs"; logs.mkdir(parents=True, exist_ok=True)
     response_path, stdout_path, stderr_path = output_dir / "response.txt", logs / "worker.stdout.jsonl", logs / "worker.stderr.log"
     stage(
@@ -79,7 +88,8 @@ def run_worker(workspace: Path, prompt: str, output_dir: Path, *, execution_plan
         compressor_mode=diet.mode,
         compressor_model=openhands.model if diet.compressor_model == "inherit" else diet.compressor_model,
     )
-    container = start(workspace, image=image, runtime=runtime)
+    container = start(workspace, image=image, runtime=runtime, exact_trae=openhands.uses_trae_workflow)
+    emit('repair_runtime', runtime=runtime, image=image, resolved_image_id=container.image_id)
     temporary_root = output_dir / ".tmp"
     temporary_root.mkdir(parents=True, exist_ok=True)
     config_dir = tempfile.TemporaryDirectory(prefix="agent-diet-worker-", dir=temporary_root)
@@ -103,14 +113,14 @@ def run_worker(workspace: Path, prompt: str, output_dir: Path, *, execution_plan
             start_new_session=True,
         )
         assert process.stdout is not None and process.stderr is not None
-        stdout_thread = Thread(target=_capture_worker_stream, args=(process.stdout, stdout_path), kwargs={"forward_progress": False}, daemon=True)
-        stderr_thread = Thread(target=_capture_worker_stream, args=(process.stderr, stderr_path), kwargs={"forward_progress": True}, daemon=True)
+        stdout_thread = Thread(target=_capture_worker_stream, args=(process.stdout, stdout_path), kwargs={"forward_progress": False, "raw": diet.keep_raw_events}, daemon=True)
+        stderr_thread = Thread(target=_capture_worker_stream, args=(process.stderr, stderr_path), kwargs={"forward_progress": True, "raw": diet.keep_raw_events}, daemon=True)
         stdout_thread.start()
         stderr_thread.start()
         try:
             assert process.stdin is not None
             process.stdin.write(prompt); process.stdin.close()
-            deadline = started + workflow.agent_timeout_seconds
+            deadline = None if workflow.agent_timeout_seconds is None else started + workflow.agent_timeout_seconds
             next_heartbeat = started + WORKER_HEARTBEAT_SECONDS
             print(
                 f"[agent-diet] worker started (pid={process.pid}); "
@@ -118,7 +128,7 @@ def run_worker(workspace: Path, prompt: str, output_dir: Path, *, execution_plan
                 file=sys.stderr,
                 flush=True,
             )
-            while process.poll() is None and time.monotonic() < deadline:
+            while process.poll() is None and (deadline is None or time.monotonic() < deadline):
                 now = time.monotonic()
                 if now >= next_heartbeat:
                     elapsed = now - started

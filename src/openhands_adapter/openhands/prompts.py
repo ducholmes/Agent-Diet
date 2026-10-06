@@ -33,7 +33,7 @@ changed in the submitted patch; this restriction also applies to verification.
 DEFAULT_TASK_PROMPT = "Diagnose and fix the reported failure."
 
 
-def build_user_prompt(
+def build_generic_user_prompt(
     project_path: Path, *, problem_statement: str | None = None,
     instructions: str = DEFAULT_TASK_PROMPT,
 ) -> str:
@@ -59,3 +59,23 @@ def build_user_prompt(
          "benchmark metadata, generated validation artifacts, or network resources."
     )
     return "\n\n".join(parts)
+
+
+from ..compat.trae_contract import SYS_PROMPT, INIT_USER_PROMPT
+
+TRAE_REPAIR_SYSTEM_PROMPT = SYS_PROMPT
+
+
+def build_user_prompt(project_path: Path, *, problem_statement: str | None = None,
+                      failure_log: str | None = None, instructions: str | None = None,
+                      reference_profile: str = "trae_verified") -> str:
+    if reference_profile == "generic":
+        return build_generic_user_prompt(project_path, problem_statement=problem_statement,
+                                         instructions=instructions or DEFAULT_TASK_PROMPT)
+    if instructions is not None:
+        raise ValueError("prompt overrides are outside the Trae contract; use generic mode")
+    issue = problem_statement if problem_statement is not None else failure_log
+    if not isinstance(issue, str) or not issue.strip():
+        raise ValueError("Trae repair requires nonempty problem_statement or prepared failure log")
+    # Preserve issue bytes decoded as UTF-8, including leading/trailing whitespace.
+    return INIT_USER_PROMPT.format(project_path=project_path, issue=issue)

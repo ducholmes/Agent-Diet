@@ -1,0 +1,17 @@
+{
+  "reference_commit": "1a436ca7cf59e30c147ecb5b360f8677e675538c",
+  "sha256": {
+    "agents/expert.py": "c25f3c4ff7906f54790433a919c2594cf3750cbcc42891f21518d563cdb7dd0c",
+    "utils/agent_util.py": "f2abece39c4f8d99305c1cec12888c8fe6af549d75da1a7ca5b3976909a2abb2",
+    "utils/sandbox.py": "b45f7558150ab20b9ef5963c56a25a282e69da580b6b8af496f8a1c51f072282",
+    "tools/get_diff.py": "984461392de9ea4134f73eb92ee3c16ced86664a06ba8f611a5e86516167fbd4",
+    "tools/claude_tools/base.py": "79056b75ffe0d1e6a76efd0d883e94a31701dc2dc47980e61816a2df94e08af2",
+    "tools/claude_tools/run.py": "c615dd9c12b5762f66b9a3b8e02122acbf61a46cb736629b8df329c9e5669fc6",
+    "tools/claude_tools/bash.py": "710d4e2f827a2f652d50e2f97ff1514cb4917a321fe3f81c8984639ac99e4606",
+    "tools/claude_tools/edit.py": "f91e9008fa4581bcb71d25c2e4b86f7bb229ebf0906cfccb6d34db9f54978147",
+    "tools/claude_tools/execute_bash.py": "b3fdad5724de09a57b18fda05de9b2bb75efa5a9865723b85d6850e3ae3086c2",
+    "tools/claude_tools/execute_str_replace_editor.py": "4fd8a3958fe6a21c06b4a2a052a9f7ac85cdfcf872c398087f23785dd147c07f",
+    "utils/llm_polytool.py": "aa719567b924ed0441b170bf943a05f1e9b038d9b46262b77573255a352a19ee",
+    "agents/traj_analyzer.py": "f70f71418379a1bf5b0ee9f5af1b2e01d0c11e54b9c86dca8b9a2899e146545c"
+  }
+}

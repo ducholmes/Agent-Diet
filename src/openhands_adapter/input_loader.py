@@ -84,6 +84,9 @@ class CaseSpec:
     workspace_disposable: bool
     initialize_git_if_missing: bool
     problem_statement: str | None = None
+    issue_source: str = "failure_log"
+    issue_encoding: str = "utf-8"
+    issue_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,9 +390,22 @@ def _load_case_paths(paths: _CasePaths, root: Path) -> CaseSpec:
     if not isinstance(workspace, Mapping):
         raise InputLoadError("config.workspace must be an object")
 
+    import hashlib
+    issue = config.get("problem_statement", repair.get("problem_statement"))
+    source = "problem_statement"
+    if issue is None:
+        source = "failure_log"
+        try:
+            issue = paths.failure.read_bytes().decode("utf-8")
+        except UnicodeError as exc:
+            raise InputLoadError("failure log must be valid UTF-8") from exc
+    if not isinstance(issue, str) or not issue.strip():
+        raise InputLoadError("problem_statement/failure log must contain nonempty issue text")
     return CaseSpec(
-        # The agent reads the staged failure log through workspace tools.
-        problem_statement=None,
+        problem_statement=issue,
+        issue_source=source,
+        issue_encoding="utf-8",
+        issue_sha256=hashlib.sha256(issue.encode("utf-8")).hexdigest(),
         case_id=paths.case_id,
         relative_id=paths.relative_id,
         input_root=root,

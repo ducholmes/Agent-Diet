@@ -61,7 +61,7 @@ class LLMTests(unittest.TestCase):
         for auth in ("subscription", "api-key"):
             for effort in ("high", None):
                 with self.subTest(auth=auth, effort=effort):
-                    config = OpenHandsConfig.from_mapping({"auth": auth, "reasoning_effort": effort})
+                    config = OpenHandsConfig.from_mapping({"auth": auth, "reasoning_effort": effort, "reference_profile": "generic"})
                     with patch("openhands_adapter.openhands.llm.require_pinned_sdk"), patch.dict(sys.modules, self.modules), patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True):
                         build_llm(config)
                     self.assertEqual(FakeLLM.calls[-1][1]["reasoning_effort"], effort)

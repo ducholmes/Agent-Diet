@@ -2,7 +2,16 @@
 # are validated against this SDK release.  Do not widen this constraint without
 # updating the runtime compatibility check and its tests.
 openhands-sdk==1.49.5
+# Responses wire serialization/SSE behavior verified with this LiteLLM release.
+litellm==1.103.2
 # Agent Diet uses the same gpt-4o tokenizer as the Trae implementation.
 tiktoken==0.14.0
 # Context-aware redundancy gate matches Trae's LZ4 frame compression.
 lz4==4.4.5
+# Trae outer interactive container shell.
+pexpect==4.9.0
+ptyprocess==0.7.0
+
+# Exact D07-D08 raw Chat serializer; inner request retries disabled.
+openai==2.54.0
+httpx==0.28.1

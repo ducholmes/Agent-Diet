@@ -37,7 +37,7 @@ class CliTests(unittest.TestCase):
                 )),),
             )
 
-            def fake_run_case(case, workflow, *, agent_runner):
+            def fake_run_case(case, workflow, *, agent_runner, reference_profile="generic", run_config=None):
                 agent_runner(root / "workspace", root / "output")
                 return SimpleNamespace(resolved=False, validation="not_run", reason="no_patch")
 
@@ -68,7 +68,7 @@ class CliTests(unittest.TestCase):
             failure = "FAILED selected-test\nExpected safe behavior, got a crash.\n"
             (root / f"{case_id}.failure.log").write_text(failure)
 
-            def fake_run_case(case, workflow, *, agent_runner):
+            def fake_run_case(case, workflow, *, agent_runner, reference_profile="generic", run_config=None):
                 self.assertEqual(case.case_id, case_id)
                 spaces = create_workspaces(case.source_project, parent=root)
                 try:
@@ -90,8 +90,8 @@ class CliTests(unittest.TestCase):
                 self.assertEqual((workspace / ".agent-diet.failure.log").read_text(), failure)
                 self.assertIn(str(workspace.resolve()), prompt)
                 self.assertIn("[Buggy source code]", prompt)
-                self.assertNotIn("[Problem statement]", prompt)
-                self.assertNotIn(failure, prompt)
+                self.assertIn("[Problem statement]", prompt)
+                self.assertIn(failure, prompt)
                 self.assertIn("Read .agent-diet.failure.log", prompt)
                 self.assertIn("Focus on the parser.", prompt)
                 self.assertIn("run_configured_command", prompt)
@@ -105,7 +105,7 @@ class CliTests(unittest.TestCase):
                  patch("openhands_adapter.cli.run_worker", side_effect=fake_worker) as worker:
                 self.assertEqual(main([
                     "--input", str(root), "--case", case_id, "--model", "test-model",
-                    "--prompt", "Focus on the parser.",
+                    "--reference-profile", "generic", "--prompt", "Focus on the parser.",
                 ]), 1)
                 worker.assert_called_once()
 
@@ -116,7 +116,7 @@ class CliTests(unittest.TestCase):
                 _write_case(root, name)
             calls = []
 
-            def fake_run_case(case, workflow, *, agent_runner):
+            def fake_run_case(case, workflow, *, agent_runner, reference_profile="generic", run_config=None):
                 calls.append(case.case_id)
                 agent_runner(case.source_project, root / "output" / case.case_id)
                 return SimpleNamespace(
@@ -168,7 +168,7 @@ class CliTests(unittest.TestCase):
     def test_custom_task_prompt_keeps_mandatory_case_context(self) -> None:
         prompt = build_user_prompt(
             Path("/repair/project"), problem_statement="Unexpected return value.",
-            instructions="Focus on the parser.",
+            instructions="Focus on the parser.", reference_profile="generic",
         )
         for expected in (
             "/repair/project", "Unexpected return value.", "Focus on the parser.",
@@ -179,7 +179,7 @@ class CliTests(unittest.TestCase):
                 self.assertIn(expected, prompt)
 
     def test_task_prompt_without_problem_statement_uses_failure_log(self) -> None:
-        prompt = build_user_prompt(Path("/repair/project"))
+        prompt = build_user_prompt(Path("/repair/project"), reference_profile="generic")
         self.assertNotIn("[Problem statement]", prompt)
         self.assertIn("Read .agent-diet.failure.log", prompt)
 
@@ -191,7 +191,7 @@ class CliTests(unittest.TestCase):
         args = build_parser().parse_args([
             "--input", "/tmp/prepared", "--case", "case-1", "--output", "exp1",
             "--model", "openai/gpt-5.2", "--auth", "api-key", "--api-key-env", "OPENROUTER_API_KEY",
-            "--openhands-timeout", "20", "--command-timeout", "10", "--timeout", "30",
+            "--reference-profile", "generic", "--openhands-timeout", "20", "--command-timeout", "10", "--timeout", "30",
             "--diet-mode", "delete", "--diet-threshold", "42", "--ctx-before", "3", "--hide-context",
         ])
         config = _override(RunConfig(), args, args.input_option.resolve())

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..input_loader import CommandSpec, EnvironmentSpec
 from ..progress import stage
+from ..compat.audit import sanitize
 from .environment import docker_command
 from .models import CommandResult
 
@@ -20,10 +21,10 @@ def _limit(value: str, maximum: int | None) -> str:
 
 def _write_log(path: Path, result: CommandResult) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    path.write_text(sanitize(
         f"COMMAND: {shlex.join(result.command or result.argv)}\nCWD: {result.cwd}\n"
         f"RETURN_CODE: {result.exit_code}\nTIMED_OUT: {result.timed_out}\n"
-        f"ELAPSED_SECONDS: {result.elapsed_seconds:.3f}\n\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}\n",
+        f"ELAPSED_SECONDS: {result.elapsed_seconds:.3f}\n\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}\n"),
         encoding="utf-8",
     )
 

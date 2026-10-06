@@ -33,6 +33,9 @@ class ValidationResult:
 class RunResult:
     case_id: str; baseline: str; agent: str; patch_generated: bool; patch_applied: bool
     validation: str; resolved: bool; reason: str | None = None
+    run_id: str | None = None
+    patch_origin: str | None = None
+    audit_status: str = "not_verified"
     elapsed_seconds: float = 0.0
     timings: dict[str, float] = field(default_factory=dict)
     token_usage: dict[str, Any] = field(default_factory=dict)

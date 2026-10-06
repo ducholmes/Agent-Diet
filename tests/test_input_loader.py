@@ -148,28 +148,30 @@ class InputLoaderTests(unittest.TestCase):
             with self.assertRaisesRegex(InputLoadError, "outside input root"):
                 discover_cases(root)
 
-    def test_problem_statement_is_none_regardless_of_metadata(self) -> None:
+    def test_problem_statement_prefers_metadata_then_failure_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write_case(root, "example-1")
             failure = "FAILED target-test\n  expected 1, got 0\n"
             (root / "example-1.failure.log").write_text(failure)
-            self.assertIsNone(load_case(root).problem_statement)
+            self.assertEqual(load_case(root).problem_statement, failure)
             path = root / "example-1.debugging-framework.json"
             config = json.loads(path.read_text())
             config["problem_statement"] = "  Expected behavior differs from actual behavior.\n"
             path.write_text(json.dumps(config))
-            self.assertIsNone(load_case(root).problem_statement)
+            self.assertEqual(load_case(root).problem_statement, config["problem_statement"])
             config["problem_statement"] = {"invalid": "type"}
             path.write_text(json.dumps(config))
-            self.assertIsNone(load_case(root).problem_statement)
+            with self.assertRaisesRegex(InputLoadError, "nonempty issue text"):
+                load_case(root)
 
-    def test_failure_log_with_non_utf8_output_can_be_loaded(self) -> None:
+    def test_failure_log_with_non_utf8_output_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write_case(root, "example-1")
             (root / "example-1.failure.log").write_bytes(b"FAILED target-test\n\xff\n")
-            self.assertIsNone(load_case(root).problem_statement)
+            with self.assertRaisesRegex(InputLoadError, "valid UTF-8"):
+                load_case(root)
 
     def test_load_case_normalizes_prepared_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -8,10 +8,22 @@ from typing import Any
 from uuid import uuid4
 
 from .diet.core import count_tokens
-from .events import emit
+from .events import emit, record_audit_error
+from .compat.audit import context_fields, request_context
 
 _role: ContextVar[tuple[str, int | None]] = ContextVar('llm_role', default=('repair', None))
+_provider_response: ContextVar[Any] = ContextVar('provider_token_response', default=None)
 TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'total_tokens', 'cached_input_tokens', 'cache_write_tokens', 'reasoning_tokens')
+
+
+@contextmanager
+def provider_token_response(raw):
+    """Keep reported usage distinct from SDK envelopes that default nulls to zero."""
+    token = _provider_response.set(raw)
+    try:
+        yield
+    finally:
+        _provider_response.reset(token)
 
 
 def value(obj: Any, key: str, default: Any = None) -> Any:
@@ -57,7 +69,8 @@ def response_tokens(raw: Any) -> dict[str, Any]:
 def compression_call(step_index: int):
     token = _role.set(('compression', step_index))
     try:
-        yield
+        with request_context('compression', force_new=True, step_index=step_index):
+            yield
     finally:
         _role.reset(token)
 
@@ -105,6 +118,14 @@ def summarize_diet(events: list[dict[str, Any]], usage: dict[str, Any]) -> dict[
         erase_in_tokens=sum(event['before_token_estimate'] for event in changes),
         erase_out_tokens=sum(event['after_token_estimate'] for event in changes),
     )
+    reference = [event for event in events if event.get('type') == 'diet_reference_metrics']
+    compatibility = snapshots[-1].get('metrics', {}).get('reference_diet_metrics') if snapshots else None
+    if compatibility is None and reference:
+        compatibility = reference[-1]['metrics']
+    if compatibility is not None:
+        metrics.update(compatibility)
+        metrics['reference_diet_metrics'] = dict(compatibility)
+        metrics['provider_compression_usage'] = compression
     metrics['step_content_reduction_tokens'] = metrics['erase_in_tokens'] - metrics['erase_out_tokens']
     rejected: dict[str, int] = {}
     for event in events:
@@ -139,7 +160,15 @@ def install_token_tracking(llm: Any, diet_metrics: Any) -> None:
 
     class TokenTelemetry(Telemetry):
         _agent_diet_tracking: bool = PrivateAttr(default=True)
-        _pending: dict[str, Any] | None = PrivateAttr(default=None)
+        _pending_context: Any = PrivateAttr(default_factory=lambda: ContextVar('pending_token_call', default=None))
+
+        @property
+        def _pending(self):
+            return self._pending_context.get()
+
+        @_pending.setter
+        def _pending(self, value):
+            self._pending_context.set(value)
 
         def _compute_cost(self, *args, **kwargs):
             return None
@@ -149,9 +178,12 @@ def install_token_tracking(llm: Any, diet_metrics: Any) -> None:
                 self._finish(status='error', error_type='RetryWithoutUsage')
             super().on_request(telemetry_ctx)
             role, step_index = _role.get()
+            correlation = context_fields()
+            role = correlation.get('role', role)
+            step_index = correlation.get('step_index', step_index)
             context = telemetry_ctx or {}
             payload = {k: context[k] for k in ('messages', 'input', 'instructions', 'tools') if k in context}
-            encoded = json.dumps(payload, ensure_ascii=False, default=str)
+
             reminder_text = []
             def reminders(obj):
                 if isinstance(obj, str) and obj.startswith((
@@ -166,12 +198,20 @@ def install_token_tracking(llm: Any, diet_metrics: Any) -> None:
                     for item in obj:
                         reminders(item)
             reminders(payload)
+            try:
+                encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+                context_estimate = count_tokens(encoded) if payload else None
+                reminder_estimate = sum(count_tokens(t) for t in reminder_text)
+            except Exception as error:
+                record_audit_error('token_estimate', error)
+                context_estimate = reminder_estimate = None
             self._pending = {
-                'call_id': str(uuid4()), 'role': role, 'model': self.model_name,
+                'call_id': correlation['request_id'] if (correlation.get('exact_transport') or correlation.get('adapted_transport')) else str(uuid4()),
+                **context_fields(), 'role': role, 'model': self.model_name,
                 'step_index': step_index, 'response_id': None,
                 'usage_status': 'unknown', 'status': 'running',
-                'context_token_estimate': count_tokens(encoded) if payload else None,
-                'reminder_message_token_estimate': sum(count_tokens(t) for t in reminder_text),
+                'context_token_estimate': context_estimate,
+                'reminder_message_token_estimate': reminder_estimate,
                 'context_estimate_encoding': 'gpt-4o',
                 'context_window': context.get('context_window'),
                 **{field: None for field in TOKEN_FIELDS},
@@ -186,11 +226,12 @@ def install_token_tracking(llm: Any, diet_metrics: Any) -> None:
                 self._pending = None
 
         def on_response(self, resp, raw_resp=None, provider_info=None):
+            reported = _provider_response.get()
             choices = value(resp, 'choices', []) or []
             reason = value(choices[0], 'finish_reason') if choices else None
             status = value(resp, 'status')
             self._finish(
-                **response_tokens(resp), response_id=value(resp, 'id'),
+                **response_tokens(resp if reported is None else reported), response_id=value(resp, 'id'),
                 response_model=value(resp, 'model'), finish_reason=reason, response_status=status,
                 incomplete_reason=value(value(resp, 'incomplete_details'), 'reason'),
                 response_error_code=value(value(resp, 'error'), 'code'),

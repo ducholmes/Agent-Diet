@@ -37,9 +37,9 @@ class DietMetrics:
         self.rejected[reason] = self.rejected.get(reason, 0) + 1
         emit("diet_rejection", reason=reason)
     def record_analysis_usage(self, usage: dict[str, int]) -> None:
+        self.compression_total_tokens += usage["total_tokens"]
         self.analysis_prompt_tokens += usage["prompt_tokens"]
         self.analysis_completion_tokens += usage["completion_tokens"]
-        self.compression_total_tokens += usage["total_tokens"]
 
 @dataclass(frozen=True, slots=True)
 class ReductionCandidate:

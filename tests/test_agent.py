@@ -24,7 +24,7 @@ class FakeAgent:
 
 
 class AgentAssemblyTests(unittest.TestCase):
-    def test_agent_receives_only_restricted_tools_and_reviewed_defaults(self) -> None:
+    def test_generic_agent_receives_only_restricted_tools_and_reviewed_defaults(self) -> None:
         FakeAgent.calls.clear()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -39,7 +39,7 @@ class AgentAssemblyTests(unittest.TestCase):
             ):
                 build_agent(
                     container,
-                    OpenHandsConfig(),
+                    OpenHandsConfig(reference_profile="generic"),
                     AgentDietConfig(),
                     WorkflowConfig(),
                     execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")},

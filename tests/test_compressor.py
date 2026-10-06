@@ -95,13 +95,13 @@ class CompressorTests(unittest.TestCase):
                     patch("openhands_adapter.openhands.agent.build_llm", return_value=self.llm) as factory,
                 ):
                     _, delegate = build_agent(
-                        RepairContainer("repair", root, "image"), OpenHandsConfig(),
+                        RepairContainer("repair", root, "image"), OpenHandsConfig(reference_profile="generic"),
                         diet, WorkflowConfig(), execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")}, compressor=override,
                     )
                     self.assertEqual(factory.call_count, llm_count)
                     self.assertEqual(delegate.compressor is not None, available)
                     if llm_count == 2:
-                        self.assertEqual(factory.call_args.kwargs, {"model": "other-model"})
+                        self.assertEqual(factory.call_args.kwargs, {"model": "other-model", "policy": None})
                     if override is not None:
                         self.assertIs(delegate.compressor, override)
 
@@ -139,7 +139,7 @@ class CompressorTests(unittest.TestCase):
                 with patch('openhands_adapter.openhands.worker.emit') as emit:
                     run_worker(
                         root, "repair", root, container=RepairContainer("repair", root, "image"),
-                        openhands=OpenHandsConfig(),
+                        openhands=OpenHandsConfig(reference_profile="generic"),
                         execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")}, diet=AgentDietConfig(threshold_tokens=3, ctx_before=0, ctx_after=0,
                                              minimum_reduction_tokens=1), workflow=WorkflowConfig(),
                     )

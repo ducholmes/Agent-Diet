@@ -1,0 +1,209 @@
+{
+  "D09": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_diet_serialization",
+      "test_trae_contract_diet_integration",
+      "test_trae_contract_compressor_payload"
+    ]
+  },
+  "D10": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_diet_algorithm",
+      "test_trae_contract_diet_integration"
+    ]
+  },
+  "D11": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_diet_parser",
+      "test_trae_contract_diet_integration",
+      "test_trae_contract_llm_retry"
+    ]
+  },
+  "container_tests": [
+    "test_trae_contract_container",
+    "test_trae_contract_audit_container"
+  ],
+  "evidence": "analysis/d09_d11_checks/",
+  "supported_domain": {
+    "modes": [
+      "ours",
+      "delete",
+      "random",
+      "lingua",
+      "skip"
+    ],
+    "minimum_reduction_tokens": 400,
+    "minimum_reduction_ratio": 0.2,
+    "tokenizer": "gpt-4o/default-special-token-policy",
+    "show_ctx": [
+      true,
+      false
+    ],
+    "use_lz4": [
+      true,
+      false
+    ],
+    "ctx_after_zero": "literal source [-0:] behavior",
+    "lingua": "source model/CPU/kwargs verified with oracle stub; actual dependency/model must load at generation",
+    "patch_capture": "frozen helper stdout/stderr; local Unix Docker exec API; strict inner decode and replacement outer decode",
+    "snapshot": "schema v1 with run/case identity; raw filter parity or hash-only filtered/submission identity"
+  },
+  "rejected_domain": [
+    "ctx_before=0 with ctx_after>0",
+    "acceptance overrides",
+    "exact subscription/Responses",
+    "Qwen streaming reference",
+    "exact positive watchdog",
+    "unknown config control keys",
+    "raw_events_path/response_path overrides",
+    "configured source extensions untracked/ignored in input baseline",
+    "exact non-Unix Docker endpoint / non-Docker runtime"
+  ],
+  "limits": [
+    "Provider semantics and live PHP/fmtlib model repair remain unverified",
+    "Resume after a crash between request and persisted decision is not guaranteed exactly once",
+    "Raw transport requires at least one choice; malformed envelopes fail outside provider retry",
+    "Full snapshot certification requires raw unredacted evidence and an independent source fixture",
+    "Functional submitted patches retain source bytes; credentials present in the patch itself are outside the credential-free fixture domain",
+    "SDK archive is a sanitized export, not a resumable authentication checkpoint",
+    "Image-backed scripted integration is not live prepared PHP/fmtlib model repair",
+    "Audit JSONL locking/atomic JSON writes do not guarantee fsync durability after power loss"
+  ],
+  "D01": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_prompts",
+      "test_trae_contract_sdk"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D02": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_input_loader",
+      "test_cli"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D03": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_tools",
+      "test_trae_contract_sdk"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D04": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_workflow",
+      "test_trae_contract_container"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D05": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_runtime",
+      "test_trae_contract_container"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D06": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_turns",
+      "test_trae_contract_sdk"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D07": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_llm_policy",
+      "test_trae_contract_llm_retry"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D08": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_compressor_payload"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D12": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_patch",
+      "test_trae_contract_workflow",
+      "test_audit_retention",
+      "test_trae_contract_audit_container"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D13": {
+    "status": "verified_local_source_oracle",
+    "tests": [
+      "test_trae_contract_sdk_controls",
+      "test_trae_contract_sdk",
+      "test_trae_contract_llm_policy",
+      "test_trae_contract_llm_retry"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "D14": {
+    "status": "verified_local_audit_and_source_fixture",
+    "tests": [
+      "test_audit_integrity",
+      "test_audit_retention",
+      "test_trae_contract_audit",
+      "test_trae_contract_audit_container"
+    ],
+    "evidence": "analysis/d14_checks/",
+    "run_date": "2026-10-05"
+  },
+  "audit_fixture_ids": [
+    "A14-01",
+    "A14-02",
+    "A14-03",
+    "A14-04",
+    "A14-05",
+    "A14-06",
+    "A14-07",
+    "A14-08",
+    "A14-09",
+    "A14-10",
+    "A14-11",
+    "A14-12",
+    "A14-13",
+    "A14-14",
+    "A14-15",
+    "A14-16",
+    "A14-17",
+    "A14-18",
+    "A14-19",
+    "A14-20",
+    "A14-21",
+    "A14-22",
+    "A14-23"
+  ],
+  "audit_evidence_scope": {
+    "local_source": "verified fixtures and regressions",
+    "sdk_container": "verified PHP/fmtlib images with HTTP/scripted responses",
+    "live_provider": "not_run"
+  }
+}

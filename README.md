@@ -1,5 +1,47 @@
 # Agent Diet adapter for OpenHands
 
+Mặc định adapter dùng `--reference-profile trae_verified`: repair contract Trae
+chạy dưới custom OpenHands `AgentBase` + `LocalConversation` trên SDK **1.49.5**.
+Profile này có 50 repair turns và budget reminders; `trae_multiswe` có 100 turns,
+không budget reminders. SDK có thêm một scheduling step để capture WIP khi cap.
+`generic` giữ agent/tools SDK trước đây.
+
+D07–D08 dùng **API-key + endpoint Chat Completions tương thích** cho cả
+repair và Agent Diet. Transport exact lấy auth/routing và telemetry từ SDK,
+nhưng dùng serializer OpenAI trực tiếp để giữ nguyên params, roles, prefill và
+cache blocks. Subscription/Responses bị reject ở exact trước generation vì
+chưa giữ đủ semantics. Subscription có thể chọn workflow Trae bằng
+`--reference-profile trae_verified --transport-conformance adapted`, hoặc
+chọn `--reference-profile generic` để dùng agent SDK thông thường.
+Adapted giữ turn/reminder/tool/Diet algorithm reference, nhưng bỏ các tham số
+subscription không hỗ trợ và dùng compression protocol `responses-step-wrapper-v1`
+thay assistant prefill. Audit báo `partial`; đây chưa phải exact D07–D08/D11.
+Exact vẫn là mặc định và vẫn chặn subscription trước generation.
+
+Reference protocol models tách khỏi actual models: mặc định repair reference
+`claude4-sonnet`, compressor reference `gpt-5-mini-2025-08-07`; đổi bằng
+`--repair-reference-model` và `--compressor-reference-model`. Exact `ours` cần
+khai báo rõ `--compressor-model`, kể cả chủ đích dùng `inherit`. Mỗi role pin cap
+8192, `n=1`, sampling/effort/stop theo literal predicate của reference source;
+12 attempts tổng, tắt inner retries và completed-response cache.
+
+Exact cần `openhands.trae_capabilities` hoặc `--trae-capabilities` ghi các field/
+semantics đã xác nhận từ endpoint. Với hai reference mặc định, cần
+`max_tokens,n,temperature,tools,reasoning_effort,cache_control,assistant_prefill`.
+Reference compressor non-GPT-5 cần thêm `stop`. Khai báo này là cam kết cấu hình,
+không phải bằng chứng adapter đã probe provider. Payload local đã được kiểm tra
+qua HTTP mock và oracle source; live provider cần kiểm tra riêng.
+Xem [báo cáo D07–D08](analysis/implementation_d07_d08.md) và
+[config mẫu](analysis/d07_d08_config.example.json). D01–D14 đã có kiểm tra local/source và SDK/container theo phạm vi trong các báo cáo implementation; live provider/prepared benchmark chưa nghiệm thu.
+
+Trae lấy issue từ `problem_statement` trong prepared config, nếu không có thì
+lấy nguyên nội dung UTF-8 của failure log. Input rỗng/sai encoding và prompt
+Overrides bị reject; không thêm workflow constraints vào repair prompt.
+`--prompt`, `--prompt-file`, `--max-iterations` chỉ dùng với `generic`.
+Watchdog mặc định tắt; `--agent-timeout N` bật giới hạn harness (giây), `0` tắt. Cả transport `exact` và `adapted` đều hỗ trợ. Khi bật, watchdog có thể dừng agent trước giới hạn lượt của Trae; đây là giới hạn thời gian bổ sung của harness.
+
+Báo cáo triển khai và lệnh kiểm tra: [analysis/implementation_d01_d06.md](analysis/implementation_d01_d06.md).
+
 ## Cài đặt OpenHands
 
 Tạo một virtual environment riêng cho adapter (SDK được pin ở phiên bản đã
@@ -31,19 +73,23 @@ set +a
 
 Model không lưu trong `.env`; mỗi lần chạy phải truyền rõ bằng `--model`.
 
-Runner truyền `reasoning_effort` vào SDK cho cả subscription và API key,
-mặc định `low`; đổi bằng `--reasoning-effort` hoặc `OPENHANDS_REASONING_EFFORT`.
-SDK đang pin không gửi tham số reasoning trong request subscription, nên giá trị
-này trong SDK chưa đảm bảo endpoint subscription áp dụng mức effort tương ứng.
+Trong `generic`, runner truyền `reasoning_effort` vào SDK cho cả subscription
+và API key, mặc định `low`; đổi bằng `--reasoning-effort` hoặc
+`OPENHANDS_REASONING_EFFORT`. Exact lấy effort từ policy từng role.
+SDK đang pin không gửi tham số reasoning trong request subscription ở `generic`.
+Trong `adapted`, adapter gửi rõ `reasoning: {"effort": "low"}` cho cả repair và
+compression theo cấu hình `reasoning_effort`; có thể đổi bằng `--reasoning-effort`.
+Audit ghi effort trong payload và manifest. Kiểm tra `reasoning.effort` trong
+`trae_provider_response` của lần chạy mới để xác nhận endpoint áp dụng đúng mức.
 
-Output shell gửi vào agent mặc định giữ tối đa 40.000 ký tự cuối mỗi lệnh,
+Trong profile `generic`, output shell gửi vào agent giữ tối đa 40.000 ký tự cuối mỗi lệnh,
 giống ContextSniper và Native-Agent, không thêm marker khi cắt. Giới hạn
 áp dụng cả khi `--diet-mode skip`. Có thể đổi bằng `--output-limit-bytes`;
 tên tùy chọn được giữ tương thích nhưng giới hạn thực tế tính theo ký tự,
 không phải token. Validation giữ output đầy đủ để xét verdict và lưu log;
 giới hạn này chỉ áp dụng cho shell tool của agent repair.
 
-Với ChatGPT Plus/Pro (mặc định), đăng nhập OpenHands một lần:
+Với ChatGPT Plus/Pro, đăng nhập OpenHands một lần:
 
 ```bash
 PYTHONPATH=src .venv-openhands/bin/python -m openhands_adapter.cli \
@@ -54,7 +100,7 @@ PYTHONPATH=src .venv-openhands/bin/python -m openhands_adapter.cli \
 
 ```bash
 PYTHONPATH=src .venv-openhands/bin/python -m openhands_adapter.cli \
-  --auth api-key --api-key-env OPENAI_API_KEY --model gpt-5.6-luna \
+  --auth api-key --reference-profile generic --api-key-env OPENAI_API_KEY --model gpt-5.6-luna \
   --input /path/to/prepared-inputs --case <case-id> --output exp1
 ```
 
@@ -65,10 +111,35 @@ Không commit file `.env`.
 ```bash
 set -a; source .env; set +a
 PYTHONPATH=src .venv-openhands/bin/python -m openhands_adapter.cli \
-  --model gpt-5.6-luna \
+  --auth subscription --reference-profile generic --model gpt-5.6-luna \
   --input /path/to/prepared-inputs \
   --case <case-id> \
   --output exp1
+```
+
+Để dùng API key trong `generic`, thay bằng `--auth api-key --api-key-env OPENAI_API_KEY`.
+Chạy exact theo config D07–D08 đã điền endpoint/model/capabilities ở trên.
+
+Để chạy Trae workflow bằng subscription với Diet `ours`:
+
+```bash
+PYTHONPATH=src .venv-openhands/bin/python -m openhands_adapter.cli \
+  --auth subscription --model gpt-5.6-sol \
+  --reference-profile trae_verified --transport-conformance adapted \
+  --diet-mode ours --compressor-model gpt-5.6-luna \
+  --input /path/to/prepared-inputs --case <case-id> \
+  --output inspect-subscription-trae-adapted
+```
+
+`OPENHANDS_TRANSPORT_CONFORMANCE=adapted` là cấu hình env tương ứng.
+Adapted chỉ hỗ trợ subscription với profile Trae; không cho phép generic/API-key
+kết hợp adapted. Manifest ghi capability/deviation theo từng role; bỏ cap,
+sampling, cache/prefill không được xem là exact. Probe serializer mặc định không
+gọi mạng; thêm `--live` để kiểm tra endpoint bằng auth subscription hiện có:
+
+```bash
+PYTHONPATH=src .venv-openhands/bin/python scripts/probe_subscription_contract.py \
+  --output analysis/subscription_checks/repair-capabilities.json
 ```
 
 Để chạy nhiều case **lần lượt**, thay `--case <case-id>` bằng
@@ -89,7 +160,24 @@ Có thể dùng thư mục con nhiều cấp, ví dụ `--output experiments/our
 Adapter cần Docker daemon đang chạy và image được khai báo trong prepared
 input đã có sẵn cục bộ; nó không tự pull hoặc build image.
 
-Agent chỉ có tool thao tác file (`list_files`, `read_file`, `search_text`,
+Hai profile Trae expose đúng bốn schemas: `str_replace_editor`, `bash`,
+`task_done`, `think`. Agent được chạy Bash tùy chọn, tạo reproducer và sửa tests
+trong repair copy. Bash output giữ đầy đủ; editor clip raw content theo marker
+16.000 ký tự của source. Completion/cap dùng unstaged tracked diff và filter gốc;
+runner submit đúng patch này. Evaluator vẫn chạy trên validation copy riêng.
+Artifacts `contract-manifest.json`, `contract-result.json`, `contract-patch.diff`
+và các `trae_*` events lưu ngoài repair workspace. Snapshot được kiểm tra schema,
+profile, turns, raw→filter→submission và byte identity trước apply. Snapshot lỗi
+không bị thay bằng recapture. Error/timeout có WIP riêng với `patch_origin` và
+`recovery-patch.diff`; external evaluation WIP không đổi generation status.
+
+Exact pin concurrency=1, context/condenser/critic/hooks/budget tắt, stuck detector
+tắt và scheduler 51/101 cho cap repair 50/100. Watchdog dương, unsupported keys,
+`raw_events_path`/`response_path` overrides bị reject; dùng artifact paths chuẩn.
+Raw diff thực thi frozen `get_diff.py`, gồm strict inner decoding, newline từ
+`print`, stderr/diagnostics và outer exec retries 3 lần/sleep 5 giây.
+
+Trong profile `generic`, agent có tool thao tác file (`list_files`, `read_file`, `search_text`,
 `write_file`, `edit_file`, `inspect_workspace_diff`) và hai tool command:
 
 - `list_configured_commands()` trả các command cùng `phase`, `index` (từ 0),
@@ -182,7 +270,11 @@ context ước tính bằng encoding `gpt-4o`. `reminder_message_token_estimate`
 cả message chứa reminder. Ước tính context gồm messages/instructions/input/tools,
 không phải token usage chính xác do provider báo. Tổng chỉ cộng mỗi request một
 lần, kể cả dùng chung LLM với `compressor_model=inherit`; response nén bị từ chối
-vẫn được tính. Retry là lần gọi riêng. Không lưu toàn bộ payload LLM hay credentials.
+vẫn được tính. Trong exact mode, một logical request bao quanh tối đa 12 transport
+attempts; `request_id` nối payload, attempts và telemetry `call_id`. Generic SDK
+vẫn ghi telemetry theo từng lần gọi SDK. `keep_raw_events=true` lưu full payload/
+response/history; `--discard-raw-events` chỉ giữ hash, độ dài, correlation và
+quyết định. Credentials được xử lý trên bản export, không sửa request thực.
 
 Usage provider không trả được ghi `null`, không đổi thành 0. `known_tokens`
 chứa phần đã biết; `complete=false` và `unknown_usage_calls` cho biết tổng còn
@@ -195,7 +287,10 @@ là `null`, ngay cả khi input/output đã đầy đủ.
 step. `rejected` ghi số lần từ chối theo lý do. `application_checks` ghi kết quả
 SDK áp dụng thay đổi: verified/view_mismatch/not_observed_before_run_end.
 `analysis_prompt_tokens`, `analysis_completion_tokens`, `compression_total_tokens`
-lấy từ tổng request nén, bao gồm retry và output bị từ chối.
+trong generic lấy từ telemetry các request nén. Exact ưu tiên
+`reference_diet_metrics` với operands/counters của source; provider usage riêng
+ở `provider_compression_usage`, bao gồm responses bị skip/reject. Retry attempts
+không tạo thêm logical compression request.
 
 `erase_in_tokens`, `erase_out_tokens`, `step_content_reduction_tokens` đo độ dài
 step trước/sau. `reminder_token_estimate` đo riêng phần reminder thêm vào;
@@ -270,10 +365,9 @@ Output mỗi case giữ `result.json`, `events.jsonl`, `patch.diff`, `response.t
 `logs/`, log validation trong `logs/validation/`; log rỗng và thư mục log rỗng
 được dọn. Config worker và workspace mặc định nằm trong `.tmp/` của case,
 được xóa sau khi chạy kể cả khi lỗi/timeout. Chỉ `--keep-workspaces`
-mới giữ các bản sao workspace trong `workspaces/` của case. Log cũ không rỗng được
-giữ để không mất dữ liệu. Khi chạy lại case, runner dọn kết quả/patch/response
-cũ trước khi bắt đầu để không lẫn với output của lần mới; config worker cũ cũng
-được dọn.
+mới giữ các bản sao workspace trong `workspaces/` của case. Mỗi run có UUID mới.
+Rerun thay toàn bộ artifacts/logs/audit của case đó, gồm protocol manifest và SDK
+archive; dùng output/run-name riêng khi cần giữ evidence lịch sử.
 
 Để kiểm tra Agent-Diet đã thay đổi context nào, lọc `events.jsonl` theo
 `diet_step_change`: mỗi bản ghi có mode, step index, event IDs, nội dung trước
@@ -282,3 +376,47 @@ ghi các event IDs gửi cho OpenHands; `diet_application_check` xác nhận ở
 ngưng tụ kế tiếp rằng View thực tế khớp với View dự kiến sau khi xóa/thay thế.
 Trạng thái `not_observed_before_run_end` nghĩa là lần xóa cuối không có lượt
 tiếp theo để đối chiếu.
+
+D09–D11 đã được đối chiếu bằng frozen-source oracle và kiểm tra container PHP/fmtlib.
+Xem [kết quả triển khai](analysis/implementation_d09_d11.md) và
+[cấu hình OpenRouter theo model đã chọn](analysis/d09_d11_config.openrouter.json).
+Exact subscription vẫn chưa giữ đủ contract; live provider verification còn pending.
+
+
+Audit D14 lưu `audit/manifest.json` (effective config, source/SDK/lock hashes,
+identity, controls, retention và artifact hashes), `audit/conformance-report.json`
+và `audit/sdk/` khi raw bật. SDK archive được stage ngoài repair, export qua
+sanitizer sau close và còn sau workspace cleanup. Hash-only không giữ SDK archive,
+full histories hoặc worker stdout/stderr; submitted patch vẫn là output chức năng.
+Hash structural JSON dùng UTF-8, sort keys, separators `(',', ':')`, không NaN;
+patch/file hashes dùng bytes nguyên văn. Preview không là raw source evidence.
+
+JSONL dùng thread lock và `flock` bao quanh toàn record. Strict reader báo partial
+tail, corruption giữa file, duplicate/conflict, sequence gap và sai schema/run ID.
+Audit write/serialization/token-estimate lỗi được ghi riêng và không gọi lại model.
+`resolved`, generation status và audit/source/provider conformance là thông tin riêng.
+
+Verifier chỉ đọc artifacts và sources; không gọi model, chạy tool hoặc resume:
+
+```bash
+PYTHONPATH=src .venv-openhands/bin/python -m openhands_adapter.compat.audit \
+  output/<run>/<case> --expected-profile trae_verified --full
+```
+
+`--full` yêu cầu raw evidence không redact. Bỏ flag này để kiểm tra hash-only
+integrity; hash-only không chứng minh full payload parity. `--oracle <fixture.json>`
+so sánh repair/compression requests và steps với fixture source độc lập, báo field/
+character offset đầu tiên khác. Projection chỉ nhận category/field allowlist có
+reason/evidence; không replace text trong messages. Integrity pass đơn lẻ không
+chứng nhận D01–D14 hoặc provider semantics. Bundle source hashes được đối chiếu với
+checkout/SDK hiện tại; cần cùng implementation để kiểm tra lại bundle cũ.
+
+Báo cáo: [D12–D13](analysis/implementation_d12_d13.md),
+[D14 và mapping nghiệm thu](analysis/implementation_d14.md). Container fixtures dùng
+responses HTTP mock trên image PHP/fmtlib thật, có nén defaults `ours/500/1/2` và
+external validation riêng. Đây là nghiệm thu integration, chưa là live model repair.
+
+Exact capture hiện yêu cầu Docker qua local Unix socket (`DOCKER_HOST=unix://...`
+hoặc socket mặc định); endpoint TCP/non-Docker bị preflight reject. Nghiệm thu D12–D14:
+264 test methods, 260 pass ở regression và 4 Docker methods pass riêng trên cả hai
+images. Retained bundles và verifier/source-oracle outputs ở `analysis/d14_checks/`.

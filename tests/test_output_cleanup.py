@@ -69,7 +69,7 @@ class OutputCleanupTests(unittest.TestCase):
 
             with patch("openhands_adapter.workflow.runner.run_baseline", return_value=BaselineResult(True)), patch("openhands_adapter.workflow.runner.capture_patch", return_value=b""):
                 run_case(case, WorkflowConfig(output_root=root / "output"), agent_runner=agent)
-            self.assertEqual({p.name for p in output.iterdir()}, {"result.json", "events.jsonl", "response.txt", "patch.diff"})
+            self.assertEqual({p.name for p in output.iterdir()}, {"result.json", "events.jsonl", "response.txt", "patch.diff", "audit"})
             self.assertEqual([p.name for p in output.parent.iterdir()], ["case"])
             self.assertFalse(workspaces[0].exists())
             self.assertEqual((case.source_project / "source.txt").read_text(), "source")
@@ -85,7 +85,7 @@ class OutputCleanupTests(unittest.TestCase):
             with patch('openhands_adapter.workflow.runner.run_baseline', return_value=BaselineResult(False, reason='baseline failed')):
                 result = run_case(case, WorkflowConfig(output_root=root / 'output'))
             self.assertEqual(result.baseline, 'failed')
-            self.assertEqual({path.name for path in output.iterdir()}, {'result.json', 'events.jsonl'})
+            self.assertEqual({path.name for path in output.iterdir()}, {'result.json', 'events.jsonl', 'audit'})
             self.assertEqual(json.loads((output / 'result.json').read_text())['baseline'], 'failed')
 
     def test_workspace_setup_failure_removes_empty_temporary_directory(self):
@@ -196,7 +196,7 @@ class OutputCleanupTests(unittest.TestCase):
             with patch("openhands_adapter.openhands.process.start") as start:
                 with self.assertRaisesRegex(ValueError, "outside the repair workspace"):
                     run_worker(root, "repair", root / "output", execution_plan={}, image="image", runtime="docker",
-                               openhands=OpenHandsConfig(), diet=AgentDietConfig(), workflow=WorkflowConfig())
+                               openhands=OpenHandsConfig(reference_profile="generic"), diet=AgentDietConfig(), workflow=WorkflowConfig())
             start.assert_not_called()
 
     def test_worker_config_is_temporary_and_empty_logs_are_removed(self):
@@ -220,7 +220,7 @@ class OutputCleanupTests(unittest.TestCase):
             (root / "workspace").mkdir()
             container = RepairContainer("repair", root / "workspace", "image")
             with patch("openhands_adapter.openhands.process.start", return_value=container), patch("openhands_adapter.openhands.process.remove") as remove, patch("openhands_adapter.openhands.process.subprocess.Popen", side_effect=spawn):
-                result = run_worker(root / "workspace", "repair", root, execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")}, image="image", runtime="docker", openhands=OpenHandsConfig(), diet=AgentDietConfig(), workflow=WorkflowConfig())
+                result = run_worker(root / "workspace", "repair", root, execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")}, image="image", runtime="docker", openhands=OpenHandsConfig(reference_profile="generic"), diet=AgentDietConfig(), workflow=WorkflowConfig())
             self.assertEqual(result.response, "done")
             self.assertFalse(config_paths[0].parent.exists())
             self.assertEqual({p.name for p in root.iterdir()}, {"response.txt", "workspace"})
@@ -240,7 +240,7 @@ class OutputCleanupTests(unittest.TestCase):
             container = RepairContainer("repair", root / "workspace", "image")
             with patch("openhands_adapter.openhands.process.start", return_value=container), patch("openhands_adapter.openhands.process.remove") as remove, patch("openhands_adapter.openhands.process.subprocess.Popen", side_effect=spawn):
                 with self.assertRaisesRegex(OSError, "spawn failed"):
-                    run_worker(root / "workspace", "repair", root, execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")}, image="image", runtime="docker", openhands=OpenHandsConfig(), diet=AgentDietConfig(), workflow=WorkflowConfig())
+                    run_worker(root / "workspace", "repair", root, execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")}, image="image", runtime="docker", openhands=OpenHandsConfig(reference_profile="generic"), diet=AgentDietConfig(), workflow=WorkflowConfig())
             self.assertFalse(config_paths[0].parent.exists())
             self.assertFalse((root / "logs").exists())
             remove.assert_called_once_with(container)
@@ -277,7 +277,7 @@ class OutputCleanupTests(unittest.TestCase):
                 patch("openhands_adapter.openhands.process.os.killpg") as kill,
                 patch("openhands_adapter.openhands.process.time.monotonic", side_effect=[0, 2, 3, 4]),
             ):
-                result = run_worker(root / "workspace", "repair", root, execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")}, image="image", runtime="docker", openhands=OpenHandsConfig(), diet=AgentDietConfig(), workflow=WorkflowConfig(agent_timeout_seconds=1))
+                result = run_worker(root / "workspace", "repair", root, execution_plan={phase: [] for phase in ("setup", "build", "target_test", "regression_test")}, image="image", runtime="docker", openhands=OpenHandsConfig(reference_profile="generic"), diet=AgentDietConfig(), workflow=WorkflowConfig(agent_timeout_seconds=1))
             self.assertTrue(result.timed_out)
             self.assertEqual(result.returncode, -15)
             kill.assert_called_once()

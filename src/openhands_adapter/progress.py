@@ -6,11 +6,12 @@ import sys
 from typing import Any
 
 from .events import emit
+from .compat.audit import sanitize
 
 
 def log(message: str) -> None:
     """Write one immediately visible progress line without touching stdout."""
-    print(f"[agent-diet] {message}", file=sys.stderr, flush=True)
+    print(f"[agent-diet] {sanitize(message)}", file=sys.stderr, flush=True)
 
 
 def stage(name: str, status: str, **fields: Any) -> None:

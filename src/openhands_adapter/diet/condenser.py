@@ -13,8 +13,13 @@ from .trajectory import LogicalStep, logical_steps
 class Condensation:
     forget_event_ids: tuple[str, ...] = (); summary: str | None = None; reason: str = "unchanged"
 class AgentDietCondenser:
-    def __init__(self, config: AgentDietConfig, *, compressor: Compressor | None = None, agent_name: str = "OpenHands", model: str | None = None):
+    def __init__(self, config: AgentDietConfig, *, compressor: Compressor | None = None, agent_name: str = "OpenHands", model: str | None = None, compression_policy=None, exact_trae: bool = False):
         config.validate(); self.config, self.compressor = config, compressor
+        self.compression_policy = compression_policy
+        self.exact_trae = exact_trae
+        if self.exact_trae:
+            from ..compat.trae_diet import validate_exact_diet
+            validate_exact_diet(config)
         self.agent_name, self.model = agent_name, model or "unknown"
         self.compressor_model = self.model if config.compressor_model == "inherit" else config.compressor_model
         self.diet = AgentDiet(threshold_tokens=config.threshold_tokens, ctx_before=config.ctx_before, ctx_after=config.ctx_after, use_lz4=config.use_lz4, minimum_reduction_tokens=config.minimum_reduction_tokens, minimum_reduction_ratio=config.minimum_reduction_ratio)
@@ -27,6 +32,9 @@ class AgentDietCondenser:
     def metrics(self) -> dict[str, Any]:
         metrics = asdict(self.diet.metrics)
         metrics['step_content_reduction_tokens'] = metrics['erase_in_tokens'] - metrics['erase_out_tokens']
+        if self.exact_trae:
+            metrics['analysis_cost_tokens'] = metrics['compression_total_tokens']
+            metrics['erase_tot_count'] = metrics['erase_count']
         return metrics
 
     def bind_summary(self, summary_event_id: str, original_event_ids: tuple[str, ...]) -> None:
@@ -140,3 +148,23 @@ class AgentDietCondenser:
         result = Condensation(candidate.step.event_ids, replacement, "reduced")
         stage("compress", "finished", agent=self.agent_name, model=self.model, result=result.reason)
         return result
+
+    def after_normal_turn(self, mgr) -> None:
+        """Analyze raw contract history, never rebuild it from SDK events."""
+        from ..compat.trae_diet import analyze_turn
+        from ..compat.trae_diet import validate_exact_diet
+        validate_exact_diet(self.config)
+        saved = getattr(mgr, 'diet_metrics', None)
+        if saved is not None:
+            for name, value in saved.items():
+                setattr(self.diet.metrics, name, value)
+        try:
+            analyze_turn(mgr, self.config, self.diet.metrics, self.compressor, self.compression_policy)
+        except Exception as exc:
+            emit("diet_compressor_error", mode=self.config.mode, phase="compression",
+                 error_type=type(exc).__name__, error=str(exc))
+            raise
+        finally:
+            mgr.diet_metrics = asdict(self.diet.metrics)
+            emit("diet_reference_metrics", metrics=self.metrics,
+                 last_analyzed_turn=getattr(mgr, 'last_analyzed_turn', None))

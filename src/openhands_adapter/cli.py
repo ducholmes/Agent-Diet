@@ -49,8 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--force-login", action="store_true")
     agent.add_argument("--login-only", action="store_true")
     agent.add_argument("--reasoning-effort")
-    agent.add_argument("--max-iterations", type=int)
-    agent.add_argument("--openhands-timeout", "--agent-timeout", dest="agent_timeout", type=int)
+    agent.add_argument("--repair-reference-model", help="Trae protocol model, independent of --model")
+    agent.add_argument("--trae-capabilities", type=lambda s: tuple(p.strip() for p in s.split(",") if p.strip()),
+                       help="confirmed endpoint fields/semantics, comma separated; required for exact mode")
+    agent.add_argument("--transport-conformance", choices=("exact", "adapted"),
+                       help="default: exact; adapted allows Trae workflow with subscription deviations")
+    agent.add_argument("--reference-profile", choices=("trae_verified", "trae_multiswe", "generic"),
+                       help="default: trae_verified (50 turns/reminders); trae_multiswe: 100 turns/no reminders")
+    agent.add_argument("--max-iterations", type=int, help="generic mode only")
+    agent.add_argument("--openhands-timeout", "--agent-timeout", dest="agent_timeout", type=int, help="harness watchdog seconds; 0 disables (default: disabled)")
     agent.add_argument("--command-timeout", type=int)
     agent.add_argument("--prompt")
     agent.add_argument("--prompt-file", type=Path)
@@ -73,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     diet.add_argument("--use-lz4", action="store_true")
     diet.add_argument("--lingua-ratio", type=float)
     diet.add_argument("--compressor-model")
+    diet.add_argument("--compressor-reference-model", help="Trae compression protocol model")
     diet.add_argument("--min-reduction-tokens", type=int, help="Minimum token saving for mode ours only")
     diet.add_argument("--min-reduction-ratio", type=float, help="Minimum reduction ratio for mode ours only")
     diet.add_argument("--discard-raw-events", action="store_true")
@@ -86,20 +94,26 @@ def _override(config: RunConfig, args: argparse.Namespace, input_root: Path | No
         "model": args.model, "auth": args.auth, "base_url": args.base_url,
         "api_key_env": args.api_key_env, "subscription_vendor": args.subscription_vendor,
         "reasoning_effort": args.reasoning_effort, "max_iterations": args.max_iterations,
+        "reference_profile": args.reference_profile, "transport_conformance": args.transport_conformance,
+        "repair_reference_model": args.repair_reference_model, "trae_capabilities": args.trae_capabilities,
     }.items():
         if value is not None:
             oh = replace(oh, **{field: value})
+    if oh.uses_trae_workflow and args.max_iterations is not None:
+        raise ValueError("--max-iterations is for generic mode; Trae profiles use fixed 50/100 turns")
     diet = config.agentdiet
     for field, value in {
         "mode": args.diet_mode, "threshold_tokens": args.diet_threshold,
         "ctx_before": args.ctx_before, "ctx_after": args.ctx_after,
         "lingua_ratio": args.lingua_ratio, "compressor_model": args.compressor_model,
+        "compressor_reference_model": args.compressor_reference_model,
         "minimum_reduction_tokens": args.min_reduction_tokens,
         "minimum_reduction_ratio": args.min_reduction_ratio,
     }.items():
         if value is not None:
             diet = replace(diet, **{field: value})
     if args.disable_diet: diet = replace(diet, enabled=False)
+    if args.compressor_model is not None: diet = replace(diet, compressor_model_explicit=True)
     if args.hide_context: diet = replace(diet, show_ctx=False)
     if args.use_lz4: diet = replace(diet, use_lz4=True)
     if args.discard_raw_events: diet = replace(diet, keep_raw_events=False)
@@ -108,7 +122,7 @@ def _override(config: RunConfig, args: argparse.Namespace, input_root: Path | No
         input_root=input_root or config.workflow.input_root,
         output_root=resolve_output_root(args.output if args.output is not None else config.workflow.output_root),
         keep_workspaces=args.keep_workspaces or config.workflow.keep_workspaces,
-        agent_timeout_seconds=args.agent_timeout or config.workflow.agent_timeout_seconds,
+        agent_timeout_seconds=(None if args.agent_timeout == 0 else args.agent_timeout) if args.agent_timeout is not None else config.workflow.agent_timeout_seconds,
         command_timeout_seconds=args.command_timeout or config.workflow.command_timeout_seconds,
         validation_timeout_seconds=args.validation_timeout or config.workflow.validation_timeout_seconds,
         output_limit_bytes=args.output_limit_bytes or config.workflow.output_limit_bytes,
@@ -132,7 +146,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         base = RunConfig.load(args.config) if args.config else RunConfig.from_env()
         config = _override(base, args, input_root.expanduser().resolve() if input_root else None)
-        prompt = _prompt(args)
+        if config.openhands.uses_trae_workflow:
+            if args.prompt is not None or args.prompt_file is not None:
+                raise ValueError("--prompt/--prompt-file are outside the Trae contract; select --reference-profile generic")
+            prompt = None
+        else:
+            prompt = _prompt(args) if args.prompt is not None or args.prompt_file is not None else (
+                config.prompt_file.read_text(encoding="utf-8") if config.prompt_file else config.prompt or DEFAULT_PROMPT
+            )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     if args.subscription_auth_method:
@@ -185,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if all_resolved else 1
 
 
-def _run_selected_case(case: CaseSpec, config: RunConfig, args: argparse.Namespace, prompt: str) -> RunResult:
+def _run_selected_case(case: CaseSpec, config: RunConfig, args: argparse.Namespace, prompt: str | None) -> RunResult:
     if args.runtime or args.image:
         case = replace(case, environment=EnvironmentSpec("image", args.runtime or case.environment.runtime, args.image or case.environment.image))
     stage(
@@ -211,7 +232,8 @@ def _run_selected_case(case: CaseSpec, config: RunConfig, args: argparse.Namespa
         result = run_worker(
             workspace, build_user_prompt(
                 workspace.resolve(), problem_statement=case.problem_statement,
-                instructions=prompt,
+                instructions=prompt if not config.openhands.uses_trae_workflow else None,
+                reference_profile=config.openhands.reference_profile,
             ), output, image=case.environment.image,
             runtime=case.environment.runtime, execution_plan=execution_plan,
             openhands=config.openhands, diet=config.agentdiet, workflow=config.workflow,
@@ -227,7 +249,7 @@ def _run_selected_case(case: CaseSpec, config: RunConfig, args: argparse.Namespa
         if result.returncode:
             raise RuntimeError(f"OpenHands worker exited with code {result.returncode}")
         return result.response
-    result = run_case(case, config.workflow, agent_runner=agent_runner)
+    result = run_case(case, config.workflow, agent_runner=agent_runner, reference_profile=config.openhands.reference_profile, run_config=config)
     stage("run", "finished", case=case.case_id, result="resolved" if result.resolved else "unresolved", validation=result.validation, reason=result.reason)
     return result
 

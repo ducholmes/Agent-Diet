@@ -21,3 +21,33 @@ Typical examples:
 
 You should only process the text within the <step> tag with the given id. STOP OUTPUT IMMEDIATELY AFTER </step>.
 """.strip()
+
+
+def build_compression_messages(context: str, step_index: int, policy, *, use_caching: bool = True) -> list[dict]:
+    system = SYSTEM_PROMPT
+    if policy.bypass_filter:
+        system = system.replace("think", "talk").replace("agent", "engineer")
+    if use_caching:
+        system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": context + f"\n\nNow, compress the step {step_index}."},
+        {"role": "assistant", "content":
+         f'Sure. Here is the compressed content of step {step_index}: <step id="{step_index}">'},
+    ]
+
+
+def build_compression_window(mgr, step_index: int, policy, *, ctx_before: int, ctx_after: int, show_ctx: bool) -> str:
+    window = [mgr.extract_step_into_traj(i, bypass_filter=policy.bypass_filter)
+              for i in range(step_index - ctx_before, step_index + ctx_after + 1)]
+    if not show_ctx:
+        window = [part if pos == ctx_before else "" for pos, part in enumerate(window)]
+    return "\n".join(window)
+
+
+def build_adapted_compression_messages(context: str, step_index: int, policy) -> list[dict]:
+    messages = build_compression_messages(context, step_index, policy, use_caching=False)[:2]
+    messages[1]['content'] += (
+        f'\nReturn exactly one complete <step id="{step_index}">...</step> wrapper. '
+        'Return no preamble, markdown fences or text outside the wrapper.')
+    return messages
