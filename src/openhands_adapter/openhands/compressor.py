@@ -122,31 +122,22 @@ class LLMCompressor:
 
     def _compress_adapted_result(self, context: str, *, step_index: int):
         from ..diet.prompts import build_adapted_compression_messages
-        from ..compat.trae_diet import CompressionResult
+        from ..compat.trae_diet import parse_response
         messages = build_adapted_compression_messages(context, step_index, self.policy)
         with compression_call(step_index):
             answer, reason, usage = self.transport(messages, [])
             self.last_request_id = self.transport.last_request_id
             emit('diet_compressor_response', step_index=step_index, answer=answer,
                  finish_reasons=[reason], usage=usage, compression_protocol=self.protocol)
-            if usage.get('completion_tokens') is None:
-                return CompressionResult('skipped', reason='completion_usage_none')
-            if type(usage.get('completion_tokens')) is not int or type(usage.get('prompt_tokens')) is not int:
-                raise ValueError('Compressor response is missing valid token usage')
-            if self.on_usage is not None:
-                self.on_usage(usage)
-            else:
-                self._exact_metrics.record_analysis_usage(usage)
-            emit('diet_compressor_usage', step_index=step_index, usage=usage)
-            if reason != 'stop' or answer.get('tool_calls') or answer.get('refusal'):
-                return CompressionResult('skipped', reason='incomplete_or_nontext_compression')
-            text = answer.get('content')
-            match = re.fullmatch(r'\s*<step\s+id=["\'](\d+)["\']>(.*?)</step>\s*',
-                                 text or '', re.DOTALL)
-            if (not match or int(match[1]) != step_index or not match[2].strip()
-                    or '<step' in match[2] or '</step>' in match[2]):
-                return CompressionResult('skipped', reason='invalid_step_wrapper')
-            return CompressionResult('parsed', match[2])
+            def record(raw_usage):
+                if self.on_usage is not None:
+                    self.on_usage(raw_usage)
+                else:
+                    self._exact_metrics.record_analysis_usage(raw_usage)
+                emit('diet_compressor_usage', step_index=step_index, usage=raw_usage)
+            # Responses keeps its own prompt/transport, but uses Trae's literal
+            # parser, including acceptance without a closing tag on stop.
+            return parse_response(answer, [reason], usage, record)
 
 
 def build_compressor(llm: Any, *, on_usage: Callable[[dict[str, int]], None] | None = None,

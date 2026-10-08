@@ -7,7 +7,7 @@ import json
 import shutil
 import os
 from uuid import uuid4
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from ..compat.audit import (SCHEMA_VERSION, byte_hash, payload_hash, sanitize, register_secrets,
                             safe_write_json, finalize_bundle, verify_bundle)
 from ..config import DEFAULT_OUTPUT_ROOT, WorkflowConfig
@@ -26,6 +26,7 @@ AgentRunner = Callable[[Path, Path], str]
 
 def _baseline_summary(result: BaselineResult) -> dict:
     return {
+        "test_evidence": result.test_evidence,
         "clean": result.clean,
         "checks": result.checks,
         "reason": result.reason,
@@ -34,6 +35,7 @@ def _baseline_summary(result: BaselineResult) -> dict:
 
 def _validation_summary(result: ValidationResult) -> dict:
     return {
+        **result.evidence,
         "passed": result.passed,
         "status": result.status,
         "phase": result.phase,
@@ -180,6 +182,7 @@ def run_case(case: CaseSpec | Path | str, workflow: WorkflowConfig, *, selector:
             validate_trae_run(run_config.openhands, run_config.agentdiet, workflow)
         if reference_profile != 'generic' and case.environment.runtime != 'docker':
             raise ValueError('exact profile requires Docker runtime')
+        frozen_config = case.config_path.read_bytes() if case.config_path.is_file() else None
         current_phase = 'workspace_setup'
         spaces = create_workspaces(
             case.source_project,
@@ -193,6 +196,11 @@ def run_case(case: CaseSpec | Path | str, workflow: WorkflowConfig, *, selector:
         timings["baseline"] = time.monotonic() - baseline_started
         stage("baseline", "finished", case=case.case_id, result="clean" if baseline.clean else "failed", elapsed=f"{timings['baseline']:.1f}s", reason=baseline.reason)
         if baseline.clean:
+            image_id = baseline.test_evidence.get('resolved_image_id')
+            if image_id:
+                case = replace(case, environment=replace(case.environment, image=image_id))
+                manifest['input']['resolved_image_id'] = image_id
+                safe_write_json(output / 'audit/manifest.json', manifest)
             import subprocess
             try:
                 baseline_id = subprocess.check_output(('git', '-C', str(spaces.repair), 'rev-parse', 'HEAD'), stderr=subprocess.DEVNULL).decode().strip()
@@ -272,6 +280,8 @@ def run_case(case: CaseSpec | Path | str, workflow: WorkflowConfig, *, selector:
             return finish(result)
         else:
             try:
+                if frozen_config is not None and case.config_path.read_bytes() != frozen_config:
+                    raise PatchError('validation_plan_changed_before_patch')
                 assert_safe_patch(patch); apply_patch(spaces.validation, patch)
                 emit('validation_patch_applied', patch_bytes_sha256=byte_hash(patch), isolated_copy=True)
                 stage("repair", "patch_applied", case=case.case_id, bytes=len(patch))
@@ -285,11 +295,9 @@ def run_case(case: CaseSpec | Path | str, workflow: WorkflowConfig, *, selector:
                 )
                 return finish(result)
             else:
-                stage("validation", "started", case=case.case_id)
                 validation_started = time.monotonic()
                 validation = run_post_patch(case, spaces.validation, timeout_seconds=workflow.validation_timeout_seconds, log_dir=output / "logs" / "validation", baseline_failures=case.failing_tests)
                 timings["validation"] = time.monotonic() - validation_started
-                stage("validation", "finished", case=case.case_id, phase=validation.phase, result=validation.status, passed=validation.passed, reason=validation.reason)
                 result = RunResult(
                     case.case_id, "clean", agent_status, True, True, validation.status, validation.passed, validation.reason,
                     baseline_summary=_baseline_summary(baseline),

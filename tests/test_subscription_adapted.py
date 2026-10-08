@@ -186,20 +186,31 @@ class AdaptedTests(unittest.TestCase):
         self.assertEqual(sleeps, [2**i for i in range(12)])
         self.assertTrue(all(body == seen[0] for body in seen))
 
-    def test_wrapper_rejects_malformed_incomplete_and_missing_usage(self):
+    def test_compression_uses_trae_parser(self):
         llm = subscription_llm()
         transport = SDKRawTransport(llm, policy=TraeLLMPolicy('compression','gpt-5-mini-2025-08-07'),
                                     conformance='adapted', sleep=lambda _: None)
         compressor = build_compressor(llm, transport=transport, policy=transport.policy)
+        from openhands_adapter.compat.trae_diet import parse_response
         for text in ('<step id="3">wrong</step>', '<step id="2"></step>',
                      '<step id="2"><step id="1">nested</step></step>', 'preamble <step id="2">x</step>',
-                     '<step id="2">x</step>tail'):
+                     '<step id="2">x</step>tail', '<step id="2">no closing', 'plain content'):
             with self.subTest(text=text), patch('litellm.responses', return_value=provider_response(response(content=text))):
-                self.assertEqual(compressor.compress_exact_result('ctx', step_index=2).status, 'skipped')
+                result = compressor.compress_exact_result('ctx', step_index=2)
+                expected = parse_response({'content': text}, ['stop'],
+                                          {'completion_tokens': 1}, lambda _: None)
+                self.assertEqual(result, expected)
+                self.assertEqual(result.status, 'parsed')
         raw = provider_response(response(content='<step id="2">kept</step>'))
         raw.update(status='incomplete', incomplete_details={'reason':'max_output_tokens'})
         with patch('litellm.responses', return_value=raw):
-            self.assertEqual(compressor.compress_exact_result('ctx', step_index=2).reason, 'incomplete_or_nontext_compression')
+            result = compressor.compress_exact_result('ctx', step_index=2)
+            self.assertEqual(result.status, 'parsed')
+            self.assertEqual(result.content, 'kept')
+        raw = provider_response(response(content='<step id="2">cut off'))
+        raw.update(status='incomplete', incomplete_details={'reason':'max_output_tokens'})
+        with patch('litellm.responses', return_value=raw):
+            self.assertEqual(compressor.compress_exact_result('ctx', step_index=2).reason, 'missing_close_without_stop')
         raw['usage'] = None
         with patch('litellm.responses', return_value=raw):
             self.assertEqual(compressor.compress_exact_result('ctx', step_index=2).reason, 'completion_usage_none')

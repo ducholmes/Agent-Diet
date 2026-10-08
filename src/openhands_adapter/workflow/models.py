@@ -21,6 +21,7 @@ class CommandResult:
 @dataclass(slots=True)
 class BaselineResult:
     clean: bool; checks: dict[str, str] = field(default_factory=dict); reason: str | None = None
+    test_evidence: dict[str, Any] = field(default_factory=dict)
 
 @dataclass(slots=True)
 class ValidationResult:
@@ -28,6 +29,7 @@ class ValidationResult:
     status: str = "invalid"; target_failures: tuple[str, ...] = (); regression_failures: tuple[str, ...] = ()
     failed_test_ids: tuple[str, ...] = (); fixed_test_ids: tuple[str, ...] = (); regression_test_ids: tuple[str, ...] = ()
     target_valid: bool = False; regression_valid: bool = False; environment_ready: bool = False
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 @dataclass(slots=True)
 class RunResult:

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import time
+from types import SimpleNamespace
+from dataclasses import replace
+from copy import deepcopy
+from .validation_reference import ProjectValidator
+from .validation_outcome import classify_validation_result
 from pathlib import Path
 
 from ..input_loader import CaseSpec, CommandSpec, expand_target_commands
@@ -13,7 +17,6 @@ from ..events import emit
 from .command import run_command
 from .environment import EnvironmentError, ensure_available
 from .models import BaselineResult, CommandResult, ValidationResult
-from .outcome import classify
 from .patch import create_baseline
 
 ZERO_TEST_RE = re.compile(r"(?:no tests? (?:were )?(?:found|ran|to run)|running 0 tests|collected 0 items|ran 0 tests|tests? run:\s*0)", re.I)
@@ -25,6 +28,7 @@ def _output(result: CommandResult) -> str:
 
 
 def _command_verdict(spec: CommandSpec, result: CommandResult, *, test: bool) -> tuple[bool, str]:
+    """Legacy command diagnostic; final evaluation uses ReferenceExecutor."""
     output = _output(result)
     if result.timed_out:
         return False, "command_timeout"
@@ -45,32 +49,6 @@ def _command_verdict(spec: CommandSpec, result: CommandResult, *, test: bool) ->
     return True, ""
 
 
-def _execution_valid(spec: CommandSpec, result: CommandResult) -> bool:
-    """A failing test is valid only when output proves that it actually ran."""
-    output = _output(result)
-    if result.timed_out or not output.strip() or ZERO_TEST_RE.search(output):
-        return False
-    if result.exit_code in {124, 125, 126, 127} or "command not found" in output.lower():
-        return False
-    if spec.evidence_pattern or spec.failure_pattern:
-        return bool(
-            (spec.evidence_pattern and re.search(spec.evidence_pattern, output, re.M))
-            or (spec.failure_pattern and re.search(spec.failure_pattern, output, re.M))
-        )
-    return bool(EXECUTED_RE.search(output))
-
-
-def _regression_ids(result: CommandResult, index: int) -> set[str]:
-    """Keep parsed regression IDs when possible, with an auditable fallback."""
-    found: set[str] = set()
-    for pattern in (r"^\*{3}\s+\[err\]:\s+(.+?)\s+in\s+tests/", r"^\[err\]:\s+(.+?)\s+in\s+tests/", r"^FAILED\s+(.+?)\s*$"):
-        for match in re.finditer(pattern, _output(result), re.M):
-            value = re.sub(r"\s+", " ", match.group(1)).strip()
-            if value:
-                found.add(f"__regression__:{value}")
-    return found or {f"__regression__:{index}"}
-
-
 def _expand_targets(case: CaseSpec) -> tuple[tuple[CommandSpec, str | None], ...]:
     return expand_target_commands(case)
 
@@ -85,8 +63,12 @@ def run_baseline(case: CaseSpec, repair: Path, validation: Path, *, timeout_seco
                 raise RuntimeError(f"missing {name}")
             checks[name] = "ok"
             stage("baseline", "check_passed", check=name)
-        ensure_available(case.environment, timeout_seconds=timeout_seconds)
+        image_id = ensure_available(case.environment, timeout_seconds=timeout_seconds)
         checks["environment"] = "ok"
+        if not case.failure_log.read_text(encoding="utf-8").strip():
+            raise RuntimeError("external_baseline_output_empty")
+        if not case.failing_tests:
+            raise RuntimeError("external_baseline_test_ids_empty")
         stage("baseline", "check_passed", check="environment")
         create_baseline(repair, case.failure_log)
         checks["git_baseline"] = "ok"
@@ -103,97 +85,157 @@ def run_baseline(case: CaseSpec, repair: Path, validation: Path, *, timeout_seco
         stage("baseline", "check_passed", check="git_baseline")
         if not any(validation.iterdir()):
             raise RuntimeError("validation workspace is empty")
-        result = BaselineResult(True, checks)
+        evidence = external_baseline(case)
+        evidence["resolved_image_id"] = image_id
+        result = BaselineResult(True, checks, test_evidence=evidence)
     except (EnvironmentError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         result = BaselineResult(False, checks, str(exc))
     stage("baseline", "checks_finished", result="clean" if result.clean else "failed", elapsed=f"{time.monotonic() - started:.1f}s", reason=result.reason)
     return result
 
 
-def _run_phase(case: CaseSpec, workspace: Path, phase: str, specs: tuple[CommandSpec, ...], *, timeout_seconds: int, output_limit_bytes: int | None, log_dir: Path | None) -> tuple[list[CommandResult], str | None]:
-    results: list[CommandResult] = []
-    stage("validation", "phase_started", phase=phase, commands=len(specs))
-    for index, spec in enumerate(specs, 1):
-        result = run_command(spec, workspace, timeout_seconds=timeout_seconds, output_limit_bytes=output_limit_bytes, environment=case.environment, label=f"{phase}-{index}", log_dir=log_dir)
-        passed, reason = _command_verdict(spec, result, test=False)
-        result.passed, result.failure_reason = passed, reason or None
-        results.append(result)
-        if not passed:
-            stage("validation", "phase_failed", phase=phase, reason=reason)
-            return results, f"{phase}_failed:{reason}"
-    stage("validation", "phase_finished", phase=phase, result="passed")
-    return results, None
+class _ReferenceExecutor:
+    """Bridge the pinned evaluator to Agent-Diet's isolated command executor."""
+
+    def __init__(self, case, timeout_seconds, log_dir):
+        self.case = case
+        self.timeout_seconds = timeout_seconds
+        self.log_dir = log_dir
+        self.commands = []
+        self.snapshots = []
+        self.raw_snapshots = []
+        self.finished_phases = set()
+
+    def finish_phase(self, phase, evidence):
+        if phase in self.finished_phases:
+            return
+        self.finished_phases.add(phase)
+        status = evidence["status"]
+        stage("validation", "phase_finished", phase=phase,
+              result={"plausible": "passed", "failing": "failed"}.get(status, "invalid"),
+              failed_test_ids=(sorted(self._matching_requested_ids(evidence.get("failed_test_ids", []),
+                               self.case.failing_tests)) if phase == "target"
+                               else evidence.get("failed_test_ids", [])),
+              reason=evidence.get("validation_error") or None)
+
+    def _run_plan(self, root, plan, artifact_dir, prefix, test_commands=None, test_scope="regression"):
+        if test_scope == "regression" and self.snapshots:
+            self.finish_phase("target", self.snapshots[0])
+        stage("validation", "phase_started", phase=test_scope)
+        return super()._run_plan(root, plan, artifact_dir, prefix,
+                                 test_commands=test_commands, test_scope=test_scope)
+
+    def _target_commands(self, plan, failing_tests):
+        # Reference expands a placeholder once with an empty selector when the
+        # requested set is empty; do not silently drop the configured command.
+        selected = self.case if failing_tests else replace(self.case, failing_tests=("",))
+        return tuple(_reference_spec(spec, f"target-{index}")
+                     for index, (spec, _) in enumerate(_expand_targets(selected), 1))
+
+    def _run_commands(self, root, specs, artifact_dir, prefix, fail_fast=True):
+        results = []
+        for index, spec in enumerate(specs, 1):
+            result = run_command(spec.original, root, timeout_seconds=self.timeout_seconds,
+                                 output_limit_bytes=None, environment=self.case.environment,
+                                 label=f"{prefix}-{index}", log_dir=self.log_dir)
+            result.passed = result.succeeded
+            result.failure_reason = None if result.succeeded else (
+                "command_timeout" if result.timed_out else f"command_returncode:{result.exit_code}")
+            self.commands.append(result)
+            record = dict(label=result.label, argv=list(result.argv), cwd=result.cwd,
+                          returncode=result.exit_code, timed_out=result.timed_out,
+                          output=_output(result), log_path=result.log_path)
+            results.append(SimpleNamespace(ok=result.succeeded, output=_output(result),
+                           returncode=result.exit_code, timed_out=result.timed_out,
+                           label=result.label, as_dict=lambda record=record: record))
+            if fail_fast and not result.succeeded:
+                break
+        return results
+
+    def _snapshot(self, plan, setup, build, tests, status, error,
+                  test_case_results=None, test_id_source=""):
+        ids = test_case_results or {}
+        snapshot = dict(status=status, validation_error=error,
+                        tests_executed=bool(tests),
+                        failed_test_ids=sorted(k for k, passed in ids.items() if not passed),
+                        passed_test_ids=sorted(k for k, passed in ids.items() if passed),
+                        test_id_source=test_id_source or "none",
+                        setup_commands=[r.as_dict() for r in setup],
+                        build_commands=[r.as_dict() for r in build],
+                        test_commands=[r.as_dict() for r in tests])
+        self.raw_snapshots.append(deepcopy(snapshot))
+        self.snapshots.append(snapshot)
+        return snapshot
 
 
-def run_post_patch(case: CaseSpec, workspace: Path, *, timeout_seconds: int, output_limit_bytes: int | None = None, log_dir: Path | None = None, baseline_failures: tuple[str, ...] | None = None) -> ValidationResult:
-    """Run setup/build, all targets, and regression; never trust model output."""
-    commands: list[CommandResult] = []
-    started = time.monotonic()
+def _reference_spec(spec, label):
+    return SimpleNamespace(original=spec, label=label, argv=spec.argv, cwd=spec.cwd,
+                           evidence_pattern=spec.evidence_pattern or "",
+                           failure_pattern=spec.failure_pattern or "",
+                           as_dict=lambda: dict(label=label, argv=list(spec.argv), cwd=spec.cwd,
+                                                evidence_pattern=spec.evidence_pattern,
+                                                failure_pattern=spec.failure_pattern))
+
+
+class ReferenceExecutor(_ReferenceExecutor, ProjectValidator):
+    pass
+
+
+def external_baseline(case, failures=None):
+    """Freeze caller evidence explicitly, as ContextSniper's benchmark does."""
+    ids = ProjectValidator._canonical_test_ids(list(case.failing_tests if failures is None else failures))
+    return dict(status="failing" if ids else "plausible", validation_error="",
+                failed_test_ids=ids, test_id_source="caller-supplied",
+                baseline_external=True, baseline_source="caller-log", baseline_observed=True,
+                validation_executed=False, setup_executed=False, compile_executed=False,
+                tests_executed=False, baseline_reproduced=False, baseline_executed=False,
+                baseline_trust="caller-supplied-log-and-test-ids")
+
+
+def run_post_patch(case: CaseSpec, workspace: Path, *, timeout_seconds: int,
+                   output_limit_bytes: int | None = None, log_dir: Path | None = None,
+                   baseline_failures: tuple[str, ...] | None = None) -> ValidationResult:
+    """Apply ContextSniper evidence, phase and APR rules to Agent-Diet execution."""
     stage("validation", "started", case=case.case_id, executor="deterministic")
-
-    def finish(result: ValidationResult) -> ValidationResult:
-        stage(
-            "validation",
-            "finished",
-            case=case.case_id,
-            phase=result.phase,
-            result=result.status,
-            passed=result.passed,
-            commands=len(result.commands),
-            elapsed=f"{time.monotonic() - started:.1f}s",
-            reason=result.reason,
-        )
-        return result
-
     try:
         ensure_available(case.environment, timeout_seconds=timeout_seconds)
     except EnvironmentError as exc:
-        return finish(ValidationResult(False, "environment", commands, str(exc), status="invalid"))
-    for phase, specs in (("setup", case.setup_commands), ("build", case.build_commands)):
-        phase_commands, error = _run_phase(case, workspace, phase, specs, timeout_seconds=timeout_seconds, output_limit_bytes=output_limit_bytes, log_dir=log_dir)
-        commands.extend(phase_commands)
-        if error:
-            return finish(ValidationResult(False, phase, commands, error, status="invalid", environment_ready=True))
-
-    try:
-        targets = _expand_targets(case)
-    except ValueError as exc:
-        return finish(ValidationResult(False, "target", commands, str(exc), status="invalid", environment_ready=True))
-    if not targets:
-        return finish(ValidationResult(False, "target", commands, "target_test_empty", status="invalid", environment_ready=True))
-    stage("validation", "phase_started", phase="target", commands=len(targets))
-    target_failures: set[str] = set()
-    target_valid = True
-    for index, (spec, test_id) in enumerate(targets, 1):
-        result = run_command(spec, workspace, timeout_seconds=timeout_seconds, output_limit_bytes=output_limit_bytes, environment=case.environment, label=f"target-{index}" + (f"-{test_id}" if test_id else ""), log_dir=log_dir)
-        passed, reason = _command_verdict(spec, result, test=True)
-        result.passed, result.failure_reason = passed, reason or None
-        commands.append(result)
-        if not _execution_valid(spec, result):
-            target_valid = False
-        if not passed:
-            target_failures.update((test_id,) if test_id else case.failing_tests)
-    if not target_valid:
-        return finish(ValidationResult(False, "target", commands, "target_test_invalid", status="invalid", target_failures=tuple(sorted(target_failures)), target_valid=False, environment_ready=True))
-    stage("validation", "phase_finished", phase="target", result="passed")
-
-    if not case.regression_test_commands:
-        return finish(ValidationResult(False, "regression", commands, "regression_test_empty", status="invalid", target_failures=tuple(sorted(target_failures)), target_valid=True, environment_ready=True))
-    stage("validation", "phase_started", phase="regression", commands=len(case.regression_test_commands))
-    regression_failures: set[str] = set()
-    regression_valid = True
-    for index, spec in enumerate(case.regression_test_commands, 1):
-        if any("{test_id}" in arg for arg in spec.argv):
-            return finish(ValidationResult(False, "regression", commands, "regression_test_contains_test_id", status="invalid", target_failures=tuple(sorted(target_failures)), target_valid=True, environment_ready=True))
-        result = run_command(spec, workspace, timeout_seconds=timeout_seconds, output_limit_bytes=output_limit_bytes, environment=case.environment, label=f"regression-{index}", log_dir=log_dir)
-        passed, reason = _command_verdict(spec, result, test=True)
-        result.passed, result.failure_reason = passed, reason or None
-        commands.append(result)
-        if not _execution_valid(spec, result):
-            regression_valid = False
-        if not passed:
-            regression_failures.update(_regression_ids(result, index))
-    post = tuple(sorted(target_failures | regression_failures))
-    outcome = classify(baseline_failures or case.failing_tests, post, valid=target_valid and regression_valid)
-    stage("validation", "phase_finished", phase="regression", result=outcome.status)
-    return finish(ValidationResult(outcome.status == "plausible", "complete", commands, None if outcome.status != "invalid" else "validation_invalid", status=outcome.status, target_failures=tuple(sorted(target_failures)), regression_failures=tuple(sorted(regression_failures)), failed_test_ids=post, fixed_test_ids=outcome.fixed_test_ids, regression_test_ids=outcome.regression_test_ids, target_valid=target_valid, regression_valid=regression_valid, environment_ready=True))
+        result = ValidationResult(False, "environment", reason=str(exc), status="invalid")
+    else:
+        executor = ReferenceExecutor(case, timeout_seconds, log_dir)
+        plan = SimpleNamespace(system=case.build_system,
+               setup=tuple(_reference_spec(s, f"setup-{i}") for i, s in enumerate(case.setup_commands, 1)),
+               build=tuple(_reference_spec(s, f"build-{i}") for i, s in enumerate(case.build_commands, 1)),
+               regression_test=tuple(_reference_spec(s, f"regression-{i}") for i, s in enumerate(case.regression_test_commands, 1)))
+        try:
+            snapshot = executor._run_target_and_regression(workspace, plan, log_dir, case.failing_tests)
+        except ValueError as exc:
+            snapshot = dict(status="invalid", validation_error=str(exc))
+        classified = classify_validation_result(external_baseline(case, baseline_failures), snapshot)
+        target = executor.snapshots[0] if case.target_test_commands and executor.snapshots else None
+        regression = (deepcopy(executor.raw_snapshots[-1]) if executor.snapshots and
+                      (not case.target_test_commands or len(executor.snapshots) > 1) else None)
+        if regression is not None and str(snapshot.get("validation_error", "")).startswith("regression_"):
+            regression.update(status="invalid", validation_error=snapshot["validation_error"])
+        target_valid = bool(target and target.get("status") in {"plausible", "failing"}
+                            and snapshot.get("target_status") in {"plausible", "failing"}
+                            and not str(snapshot.get("validation_error", "")).startswith("target_"))
+        regression_valid = bool(regression and regression.get("status") in {"plausible", "failing"}
+                                and snapshot.get("status") in {"plausible", "failing"})
+        result = ValidationResult(classified["status"] == "plausible", "complete",
+                 executor.commands, classified.get("validation_error") or None,
+                 status=classified["status"], target_valid=target_valid,
+                 regression_valid=regression_valid, environment_ready=True,
+                 target_failures=tuple(sorted(executor._matching_requested_ids(
+                     target.get("failed_test_ids", []), case.failing_tests))) if target else (),
+                 regression_failures=tuple(regression.get("failed_test_ids", [])) if regression else (),
+                 failed_test_ids=tuple(classified["post_failed_test_ids"]),
+                 fixed_test_ids=tuple(classified["fixed_test_ids"]),
+                 regression_test_ids=tuple(classified["regression_test_ids"]),
+                 evidence=classified)
+        for phase, evidence in (("target", target), ("regression", regression)):
+            if evidence is not None:
+                executor.finish_phase(phase, evidence)
+    stage("validation", "finished", case=case.case_id, phase=result.phase,
+          result=result.status, passed=result.passed, reason=result.reason)
+    return result

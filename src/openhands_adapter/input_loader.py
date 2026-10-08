@@ -87,6 +87,7 @@ class CaseSpec:
     issue_source: str = "failure_log"
     issue_encoding: str = "utf-8"
     issue_sha256: str = ""
+    build_system: str = "custom"
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +414,7 @@ def _load_case_paths(paths: _CasePaths, root: Path) -> CaseSpec:
         config_path=paths.config,
         failure_log=paths.failure,
         schema_version=_optional_schema_version(config),
+        build_system=str(config.get("build_system", config.get("system", "custom"))),
         environment=_environment_spec(config),
         setup_commands=_phase_specs(config, "setup"),
         build_commands=_phase_specs(config, "build"),

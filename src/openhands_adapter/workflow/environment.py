@@ -13,7 +13,7 @@ class EnvironmentError(RuntimeError):
     """The declared validation runtime cannot be used safely."""
 
 
-def ensure_available(environment: EnvironmentSpec, *, timeout_seconds: int) -> None:
+def ensure_available(environment: EnvironmentSpec, *, timeout_seconds: int) -> str:
     """Require the configured runtime and already-built image; never pull/build."""
     if environment.mode != "image":
         raise EnvironmentError(f"unsupported validation environment: {environment.mode}")
@@ -31,6 +31,8 @@ def ensure_available(environment: EnvironmentSpec, *, timeout_seconds: int) -> N
         if completed.returncode:
             detail = (completed.stderr or completed.stdout).strip()
             raise EnvironmentError(f"{label}: {environment.image if 'image' in label else environment.runtime}: {detail}")
+
+    return completed.stdout.strip()
 
 
 def docker_command(environment: EnvironmentSpec, workspace: Path, cwd: str, argv: tuple[str, ...]) -> tuple[tuple[str, ...], Path]:
